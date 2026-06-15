@@ -1,4 +1,4 @@
-""" CRYPTO ARBITRAGE TERMINAL v42.0 — Sniper Mode (Fixed API Specs) """
+""" CRYPTO ARBITRAGE TERMINAL v43.0 — True Fee Integration """
 import os
 import sys
 import asyncio
@@ -17,8 +17,8 @@ ROI_THRESHOLD_ALERT     = 5.0
 SAFETY_FACTOR           = 1.15
 MAX_CONCURRENT          = 20
 BINANCE_FEE_RATE        = 0.0005
-PREDICT_DEFAULT_FEE_BPS = 200
-POLYMARKET_CRYPTO_FEE   = 0.07
+PREDICT_FEE_RATE        = 0.02  # 2% Base Fee
+POLYMARKET_CRYPTO_FEE   = 0.07  # 0.07 Fee Rate для Crypto
 
 load_dotenv()
 PREDICT_API_KEY    = os.getenv("PREDICT_API_KEY")
@@ -47,6 +47,7 @@ class Deal:
     leverage: int
     profit_usd: float
     roi: float
+    fee_usd: float
     source: str
     question: str
     parsed: MarketParsed
@@ -59,11 +60,11 @@ class ArbitrageScanner:
         self._pred_headers = {
             "x-api-key": PREDICT_API_KEY,
             "Content-Type": "application/json",
-            "User-Agent": "ArbitrageBot/42.0",
+            "User-Agent": "ArbitrageBot/43.0",
         }
         print(f"\n{'='*65}")
-        print(f"  ARBITRAGE TERMINAL v42.0 | Budget: ${BET_AMOUNT:.0f}")
-        print(f"  Sniper Mode: Direct Slugs & API-Compliant Scans")
+        print(f"  ARBITRAGE TERMINAL v43.0 | Budget: ${BET_AMOUNT:.0f}")
+        print(f"  Sniper Mode + True Protocol Fees Integration")
         print(f"{'='*65}\n")
 
     # ─── PRICES ───────────────────────────────────────────────────────────────
@@ -109,7 +110,7 @@ class ArbitrageScanner:
         if len(nums) < 2: return None
         return MarketParsed(ticker=ticker, target_low=min(nums), target_high=max(nums), current=cur)
 
-    # ─── METADATA (SNIPER FETCH) ──────────────────────────────────────────────
+    # ─── METADATA ─────────────────────────────────────────────────────────────
     async def fetch_poly_targets(self, session) -> list:
         slugs = [
             "will-solana-hit-60-or-140-first",
@@ -134,11 +135,10 @@ class ArbitrageScanner:
         return results
 
     async def fetch_pred_targets(self, session) -> list:
-        # Згідно специфікації використовуємо status=OPEN та first=100
         found_markets = []
         cursor = None
 
-        for _ in range(10): # Перебираємо до 10 сторінок (1000 ринків)
+        for _ in range(10):
             params = {"first": 100, "status": "OPEN"}
             if cursor: params["after"] = cursor
 
@@ -151,7 +151,6 @@ class ArbitrageScanner:
 
                     for m in items:
                         t = (m.get('title') or m.get('question') or '').lower()
-                        # Жорсткий пошук по ключових словах, щоб ігнорувати формат (1k vs 1,000)
                         is_sol = "solana" in t and "60" in t and "140" in t
                         is_eth = "eth" in t and ("1k" in t or "1000" in t or "1,000" in t) and ("3k" in t or "3000" in t or "3,000" in t)
                         is_bnb = "bnb" in t and "400" in t and "800" in t
@@ -166,7 +165,7 @@ class ArbitrageScanner:
                 break
         return found_markets
 
-    # ─── ORDERBOOKS ───────────────────────────────────────────────────────────
+    # ─── ORDERBOOKS & CALCULATION ─────────────────────────────────────────────
     @staticmethod
     def _yes_is_low(question: str) -> bool:
         nums = re.findall(r'[\d,]+\.?\d*', question)
@@ -195,7 +194,6 @@ class ArbitrageScanner:
 
         elif src == 'Predict.fun':
             try:
-                # Використовуємо числовий ID знайденого ринку
                 market_id = m.get('id')
                 async with session.get(f"https://api.predict.fun/v1/markets/{market_id}/orderbook", headers=self._pred_headers) as r:
                     if r.status == 200:
@@ -218,20 +216,35 @@ class ArbitrageScanner:
                 
                 if pct_up > 0 and pct_down > 0:
                     shares = BET_AMOUNT / price
-                    fee = (shares * min(price, 1 - price) * (PREDICT_DEFAULT_FEE_BPS / 10000)) if src == 'Predict.fun' else (shares * POLYMARKET_CRYPTO_FEE * price * (1 - price))
+                    fee = 0.0
                     
-                    pos_usd = (BET_AMOUNT / price) / (pct_up + pct_down)
-                    profit = min(
-                        pos_usd * pct_up - pos_usd * (2 * BINANCE_FEE_RATE) - BET_AMOUNT - fee,
-                        (BET_AMOUNT / price) - BET_AMOUNT - fee - pos_usd * pct_down - pos_usd * (2 * BINANCE_FEE_RATE)
-                    )
+                    # Розрахунок протокольних комісій
+                    if src == 'Predict.fun':
+                        fee = PREDICT_FEE_RATE * min(price, 1 - price) * shares
+                    elif src == 'Polymarket':
+                        fee = shares * POLYMARKET_CRYPTO_FEE * price * (1 - price)
+
+                    # Комісія стягується з Payout
+                    net_payout = shares - fee
+                    denom = pct_up + pct_down
                     
-                    if profit >= MIN_PROFIT_USD:
-                        dist = abs(p.current - (p.target_low if is_low else p.target_high)) / p.current
-                        lev = min(max(1, int(1 / (dist * SAFETY_FACTOR))), 20) if dist else 1
-                        roi = (profit / (BET_AMOUNT + pos_usd / lev + fee)) * 100
+                    if denom > 0:
+                        pos_usd = net_payout / denom
+                        fut_fee = 2 * BINANCE_FEE_RATE
                         
-                        deals.append(Deal(btype, price, "Long" if is_low else "Short", pos_usd, lev, profit, roi, src, q, p))
+                        net_up = pos_usd * pct_up - pos_usd * fut_fee - BET_AMOUNT
+                        net_down = net_payout - BET_AMOUNT - pos_usd * pct_down - pos_usd * fut_fee
+                        profit = min(net_up, net_down)
+                        
+                        if profit >= MIN_PROFIT_USD:
+                            dist = abs(p.current - (p.target_low if is_low else p.target_high)) / p.current
+                            lev = min(max(1, int(1 / (dist * SAFETY_FACTOR))), 20) if dist else 1
+                            
+                            # Інвестиція = купівля опціону + забезпечення ф'ючерса (без fee, бо fee вираховується з виграшу)
+                            invested = BET_AMOUNT + (pos_usd / lev)
+                            roi = (profit / invested) * 100
+                            
+                            deals.append(Deal(btype, price, "Long" if is_low else "Short", pos_usd, lev, profit, roi, fee, src, q, p))
         return deals
 
     # ─── MAIN EXECUTOR ────────────────────────────────────────────────────────
@@ -241,8 +254,6 @@ class ArbitrageScanner:
             if not self.prices: return
 
             print("  [2/4] Fetching specific targets...")
-            
-            # Шукаємо ринки паралельно
             poly_markets, pred_markets = await asyncio.gather(
                 self.fetch_poly_targets(session),
                 self.fetch_pred_targets(session)
@@ -276,9 +287,11 @@ class ArbitrageScanner:
             
             for d in deals:
                 margin = d.pos_size_usd / d.leverage
-                print(f"\n▸ {d.question}\n  {d.source} | {d.parsed.ticker} ${d.parsed.current:,.2f} → [${d.parsed.target_low:,.0f} / ${d.parsed.target_high:,.0f}]")
-                print(f"  Profit: ${d.profit_usd:.2f}  ROI: +{d.roi:.1f}%")
-                print(f"  1. Buy {d.bet_type} @ {d.bet_price:.3f} → ${BET_AMOUNT:.0f} (MARKET)")
+                payout_gross = BET_AMOUNT / d.bet_price
+                print(f"\n▸ {d.question}")
+                print(f"  {d.source} | {d.parsed.ticker} ${d.parsed.current:,.2f} → [${d.parsed.target_low:,.0f} / ${d.parsed.target_high:,.0f}]")
+                print(f"  Profit: ${d.profit_usd:.2f}  |  ROI: +{d.roi:.1f}%  |  Fee: ${d.fee_usd:.2f}")
+                print(f"  1. Buy {d.bet_type} @ {d.bet_price:.3f} → Cost: ${BET_AMOUNT:.0f} (Net Payout: ${payout_gross - d.fee_usd:.2f})")
                 print(f"  2. {d.hedge_dir} Futures @ ${d.parsed.current:,.2f} → ${margin:.2f} (x{d.leverage})")
                 print("-" * 65)
 
