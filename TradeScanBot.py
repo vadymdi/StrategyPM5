@@ -263,8 +263,24 @@ class ArbitrageScanner:
 
     # ─── PREDICT.FUN ──────────────────────────────────────────────────────────
     async def _pred_find_id(self, session, slug: str) -> Optional[str]:
-        """Шукаємо market ID — спочатку по slug напряму, потім по першій сторінці"""
-        # Спроба 1: прямий запит по slug
+        """Шукає market ID: фільтр по параметру, прямий шлях або глибока пагінація."""
+        
+        # Спроба 1: Фільтрація по параметру slug
+        try:
+            async with session.get(
+                "https://api.predict.fun/v1/markets",
+                headers=self._pred_headers,
+                params={"slug": slug}
+            ) as r:
+                if r.status == 200:
+                    data = await r.json(content_type=None)
+                    items = data.get('data', data) if isinstance(data, dict) else data
+                    if isinstance(items, list) and items:
+                        return str(items[0].get('id'))
+        except Exception:
+            pass
+
+        # Спроба 2: Прямий запит по шляху
         try:
             async with session.get(
                 f"https://api.predict.fun/v1/markets/{slug}",
@@ -272,28 +288,38 @@ class ArbitrageScanner:
             ) as r:
                 if r.status == 200:
                     data = await r.json(content_type=None)
-                    item = data.get('data', data)
-                    mid = item.get('id')
-                    if mid:
-                        return str(mid)
+                    item = data.get('data', data) if isinstance(data, dict) else data
+                    if isinstance(item, dict) and item.get('id'):
+                        return str(item['id'])
         except Exception:
             pass
 
-        # Спроба 2: перша сторінка активних ринків (limit=50, без пагінації)
+        # Спроба 3: Глибока пагінація активних ринків (до 2000 записів)
         try:
-            async with session.get(
-                "https://api.predict.fun/v1/markets",
-                headers=self._pred_headers,
-                params={"limit": 50, "status": "ACTIVE"},
-            ) as r:
-                if r.status != 200:
-                    return None
-                data  = await r.json(content_type=None)
-                items = data.get('data', []) if isinstance(data, dict) else data
-                for item in items:
-                    s = str(item.get('slug', '') or item.get('id', ''))
-                    if slug in s or s == slug:
-                        return str(item['id'])
+            for i in range(20):
+                async with session.get(
+                    "https://api.predict.fun/v1/markets",
+                    headers=self._pred_headers,
+                    params={
+                        "limit": 100, 
+                        "offset": i * 100, 
+                        "page": i + 1, 
+                        "status": "ACTIVE"
+                    },
+                ) as r:
+                    if r.status != 200:
+                        break
+                    
+                    data = await r.json(content_type=None)
+                    items = data.get('data', data) if isinstance(data, dict) else data
+                    
+                    if not isinstance(items, list) or not items:
+                        break
+                    
+                    for item in items:
+                        s = str(item.get('slug', '') or item.get('id', ''))
+                        if slug == s or slug in s:
+                            return str(item['id'])
         except Exception:
             pass
 
