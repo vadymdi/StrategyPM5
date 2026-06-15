@@ -1,4 +1,4 @@
-""" CRYPTO ARBITRAGE TERMINAL v39.0 — GitHub Actions Optimized """
+""" CRYPTO ARBITRAGE TERMINAL v40.0 — Hybrid Bulk-Scan & Fast Orderbooks """
 import os
 import sys
 import asyncio
@@ -15,7 +15,7 @@ BET_AMOUNT              = 1000.0
 MIN_PROFIT_USD          = 1.0
 ROI_THRESHOLD_ALERT     = 5.0
 SAFETY_FACTOR           = 1.15
-MAX_CONCURRENT          = 50  # Збільшено для GitHub Actions
+MAX_CONCURRENT          = 50
 BINANCE_FEE_RATE        = 0.0005
 PREDICT_DEFAULT_FEE_BPS = 200
 POLYMARKET_CRYPTO_FEE   = 0.07
@@ -25,11 +25,37 @@ PREDICT_API_KEY    = os.getenv("PREDICT_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
+# Розширений список з v36.1 для максимального охоплення
 ASSETS_MAP = {
     "BTC": "BTCUSDT", "Bitcoin": "BTCUSDT",
-    "ETH": "ETHUSDT", "Ethereum": "ETHUSDT",
+    "ETH": "ETHUSDT", "Ethereum": "ETHUSDT", "Ether": "ETHUSDT",
     "SOL": "SOLUSDT", "Solana": "SOLUSDT",
     "BNB": "BNBUSDT", "Binance Coin": "BNBUSDT",
+    "XRP": "XRPUSDT", "Ripple": "XRPUSDT",
+    "DOGE": "DOGEUSDT", "DOGECOIN": "DOGEUSDT",
+    "ADA": "ADAUSDT", "Cardano": "ADAUSDT",
+    "AVAX": "AVAXUSDT", "Avalanche": "AVAXUSDT",
+    "LINK": "LINKUSDT", "Chainlink": "LINKUSDT",
+    "LTC": "LTCUSDT", "Litecoin": "LTCUSDT",
+    "DOT": "DOTUSDT", "Polkadot": "DOTUSDT",
+    "TRX": "TRXUSDT", "SHIB": "SHIBUSDT",
+    "SUI": "SUIUSDT", "Sui": "SUIUSDT",
+    "APT": "APTUSDT", "Aptos": "APTUSDT",
+    "TON": "TONUSDT", "Toncoin": "TONUSDT",
+    "NEAR": "NEARUSDT", "ATOM": "ATOMUSDT",
+    "ARB": "ARBUSDT", "OP": "OPUSDT",
+    "PEPE": "PEPEUSDT", "WIF": "WIFUSDT",
+    "BCH": "BCHUSDT", "BITCOIN CASH": "BCHUSDT",
+    "UNI": "UNIUSDT", "AAVE": "AAVEUSDT", "MKR": "MKRUSDT",
+    "LDO": "LDOUSDT", "ENA": "ENAUSDT",
+    "MATIC": "MATICUSDT", "Polygon": "MATICUSDT",
+    "XLM": "XLMUSDT", "Stellar": "XLMUSDT",
+    "HBAR": "HBARUSDT", "KAS": "KASUSDT",
+    "ETC": "ETCUSDT", "FIL": "FILUSDT", "ICP": "ICPUSDT",
+    "INJ": "INJUSDT", "TIA": "TIAUSDT", "SEI": "SEIUSDT",
+    "FTM": "FTMUSDT", "TAO": "TAOUSDT", "WLD": "WLDUSDT",
+    "BONK": "1000BONKUSDT", "FLOKI": "FLOKIUSDT",
+    "RNDR": "RNDRUSDT", "RENDER": "RENDERUSDT",
 }
 
 POLY_SLUGS = [
@@ -68,11 +94,11 @@ class ArbitrageScanner:
         self._pred_headers = {
             "x-api-key": PREDICT_API_KEY,
             "Content-Type": "application/json",
-            "User-Agent": "ArbitrageBot/39.0",
+            "User-Agent": "ArbitrageBot/40.0",
         }
         print(f"\n{'='*65}")
-        print(f"  ARBITRAGE TERMINAL v39.0 | Budget: ${BET_AMOUNT:.0f}")
-        print(f"  Polymarket + Predict.fun | GitHub Actions Optimized")
+        print(f"  ARBITRAGE TERMINAL v40.0 | Budget: ${BET_AMOUNT:.0f}")
+        print(f"  Polymarket + Predict.fun | Hybrid Logic")
         print(f"{'='*65}\n")
 
     # ─── PRICES ───────────────────────────────────────────────────────────────
@@ -94,14 +120,37 @@ class ArbitrageScanner:
                 continue
 
         try:
-            ids = "bitcoin,ethereum,solana,binancecoin"
+            ids = ("bitcoin,ethereum,solana,binancecoin,ripple,dogecoin,cardano,"
+                   "avalanche-2,chainlink,litecoin,polkadot,tron,monero,near,"
+                   "cosmos,shiba-inu,sui,aptos,the-open-network,arbitrum,optimism,"
+                   "pepe,dogwifcoin,bitcoin-cash,uniswap,aave,maker,lido-dao,ethena,"
+                   "matic-network,stellar,hedera-hashgraph,kaspa,ethereum-classic,"
+                   "filecoin,internet-computer,injective-protocol,celestia,sei-network,"
+                   "fantom,bittensor,worldcoin-wld,bonk,floki,render-token")
             url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd"
             async with session.get(url) as r:
                 if r.status == 200:
                     data = await r.json(content_type=None)
-                    MAP = {"bitcoin": "BTCUSDT", "ethereum": "ETHUSDT", "solana": "SOLUSDT", "binancecoin": "BNBUSDT"}
-                    for gid, sym in MAP.items():
-                        if gid in data:
+                    GECKO_MAP = {
+                        "bitcoin": "BTCUSDT", "ethereum": "ETHUSDT", "solana": "SOLUSDT",
+                        "binancecoin": "BNBUSDT", "ripple": "XRPUSDT", "dogecoin": "DOGEUSDT",
+                        "cardano": "ADAUSDT", "avalanche-2": "AVAXUSDT", "chainlink": "LINKUSDT",
+                        "litecoin": "LTCUSDT", "polkadot": "DOTUSDT", "tron": "TRXUSDT",
+                        "monero": "XMRUSDT", "near": "NEARUSDT", "cosmos": "ATOMUSDT",
+                        "shiba-inu": "SHIBUSDT", "sui": "SUIUSDT", "aptos": "APTUSDT",
+                        "the-open-network": "TONUSDT", "arbitrum": "ARBUSDT", "optimism": "OPUSDT",
+                        "pepe": "PEPEUSDT", "dogwifcoin": "WIFUSDT", "bitcoin-cash": "BCHUSDT",
+                        "uniswap": "UNIUSDT", "aave": "AAVEUSDT", "maker": "MKRUSDT",
+                        "lido-dao": "LDOUSDT", "ethena": "ENAUSDT", "matic-network": "MATICUSDT",
+                        "stellar": "XLMUSDT", "hedera-hashgraph": "HBARUSDT", "kaspa": "KASUSDT",
+                        "ethereum-classic": "ETCUSDT", "filecoin": "FILUSDT",
+                        "internet-computer": "ICPUSDT", "injective-protocol": "INJUSDT",
+                        "celestia": "TIAUSDT", "sei-network": "SEIUSDT", "fantom": "FTMUSDT",
+                        "bittensor": "TAOUSDT", "worldcoin-wld": "WLDUSDT", "bonk": "1000BONKUSDT",
+                        "floki": "FLOKIUSDT", "render-token": "RNDRUSDT",
+                    }
+                    for gid, sym in GECKO_MAP.items():
+                        if gid in data and 'usd' in data[gid]:
                             self.prices[sym] = float(data[gid]['usd'])
                     print(f"       ✅ CoinGecko: {len(self.prices)} pairs")
                     return
@@ -111,22 +160,19 @@ class ArbitrageScanner:
 
     # ─── PARSING ──────────────────────────────────────────────────────────────
     def parse_market(self, question: str) -> Optional[MarketParsed]:
-        if not question: 
-            return None
+        if not question: return None
         q = question.lower()
-        
         if not ((" or " in q or " before " in q) and any(x in q for x in ("hit", "reach", "touch", "first"))):
             return None
-            
+        if "above" in q or "below" in q: return None
+
         ticker = asset = None
-        for name, sym in ASSETS_MAP.items():
+        for name in sorted(ASSETS_MAP, key=len, reverse=True):
             if re.search(r'(?<![a-z])' + re.escape(name.lower()) + r'(?![a-z])', q):
-                if sym in self.prices:
-                    ticker, asset = sym, name
+                if ASSETS_MAP[name] in self.prices:
+                    ticker, asset = ASSETS_MAP[name], name
                     break
-                    
-        if not ticker: 
-            return None
+        if not ticker: return None
 
         cur = self.prices[ticker]
         nums = []
@@ -140,8 +186,7 @@ class ArbitrageScanner:
             except ValueError:
                 pass
 
-        if len(nums) < 2: 
-            return None
+        if len(nums) < 2: return None
         return MarketParsed(ticker=ticker, asset=asset, target_low=min(nums), target_high=max(nums), current=cur)
 
     # ─── FETCH METADATA ───────────────────────────────────────────────────────
@@ -163,49 +208,51 @@ class ArbitrageScanner:
 
     async def fetch_poly_metadata(self, session) -> list:
         res = await asyncio.gather(*[self._poly_slug(session, s) for s in POLY_SLUGS])
-        return [r for r in res if r]
+        markets = [r for r in res if r]
+        print(f"       ✅ Polymarket: {len(markets)} markets")
+        return markets
 
     async def fetch_pred_metadata(self, session) -> list:
         IGNORE = {'RESOLVED', 'CLOSED', 'CANCELLED'}
         asset_keys = {k.lower() for k in ASSETS_MAP}
         markets = []
         cursor = None
-        
-        for i in range(15):  # Пагінація: до 15 сторінок (3000 ринків)
-            params = {"limit": 200}
-            if cursor: 
-                params["after"] = cursor
-                
+        pages = 0
+
+        sys.stdout.write("       🔄 Predict.fun scanning: ")
+        # Ліміт у 100 сторінок (20 000 ринків), щоб не потрапити в timeout, 
+        # або до 1000 знайдених крипто-ринків
+        while len(markets) < 1000 and pages < 100:
             try:
+                params = {"limit": 200}
+                if cursor: params["after"] = cursor
+                
                 async with session.get("https://api.predict.fun/v1/markets", headers=self._pred_headers, params=params) as r:
                     if r.status != 200: 
-                        print(f"       ⚠️ Predict.fun HTTP {r.status} на сторінці {i+1}")
                         break
-                        
                     data = await r.json(content_type=None)
                     items = data.get('data', []) if isinstance(data, dict) else data
                     if not items: 
                         break
                     
                     for m in items:
-                        # Фільтруємо завершені ринки локально (як у v36.1)
                         if m.get('status') in IGNORE or m.get('resolution'): 
                             continue
-                            
-                        # Попередній фільтр по монетах, щоб не перевантажувати парсер
                         q = (m.get('title') or m.get('question') or '').lower()
                         if any(k in q for k in asset_keys):
                             m['source'] = 'Predict.fun'
                             markets.append(m)
                             
                     cursor = data.get('cursor') if isinstance(data, dict) else None
+                    pages += 1
+                    sys.stdout.write(".")
+                    sys.stdout.flush()
                     if not cursor: 
                         break
-            except Exception as e:
-                print(f"       ❌ Predict.fun помилка: {e}")
+            except Exception:
                 break
                 
-        print(f"       ✅ Predict.fun: знайдено {len(markets)} потенційних крипто-ринків")
+        print(f"\n       ✅ Predict.fun: {len(markets)} matched markets (checked {pages} pages)")
         return markets
 
     # ─── ORDERBOOKS & CALC ────────────────────────────────────────────────────
@@ -222,8 +269,7 @@ class ArbitrageScanner:
                 if r.status == 200:
                     data = await r.json(content_type=None)
                     asks = data.get('asks', [])
-                    if asks:
-                        return float(min(asks, key=lambda x: float(x['price']))['price'])
+                    if asks: return float(min(asks, key=lambda x: float(x['price']))['price'])
         except Exception:
             pass
         return None
@@ -244,14 +290,12 @@ class ArbitrageScanner:
         return None, None
 
     def calc_deal(self, price_bet: float, bet_type: str, p: MarketParsed, source: str, question: str) -> Optional[Deal]:
-        if not (0.05 < price_bet < 0.85): 
-            return None
+        if not (0.05 < price_bet < 0.85): return None
         is_low = bet_type == "LOW"
 
         pct_up   = ((p.target_high - p.current) / p.current) if is_low else ((p.current - p.target_low) / p.current)
         pct_down = ((p.current - p.target_low) / p.current)  if is_low else ((p.target_high - p.current) / p.current)
-        if pct_up <= 0 or pct_down <= 0: 
-            return None
+        if pct_up <= 0 or pct_down <= 0: return None
 
         fee = 0.0
         shares = BET_AMOUNT / price_bet
@@ -261,8 +305,7 @@ class ArbitrageScanner:
             fee = shares * POLYMARKET_CRYPTO_FEE * price_bet * (1 - price_bet)
 
         denom = pct_up + pct_down
-        if denom <= 0: 
-            return None
+        if denom <= 0: return None
 
         payout = BET_AMOUNT / price_bet
         pos_usd = payout / denom
@@ -272,8 +315,7 @@ class ArbitrageScanner:
         net_down = payout - BET_AMOUNT - fee - pos_usd * pct_down - pos_usd * fut_fee
         profit   = min(net_up, net_down)
 
-        if profit < MIN_PROFIT_USD: 
-            return None
+        if profit < MIN_PROFIT_USD: return None
 
         strike = p.target_low if is_low else p.target_high
         dist   = abs(p.current - strike) / p.current
@@ -300,34 +342,35 @@ class ArbitrageScanner:
         for price, btype in ((p_low, "LOW"), (p_high, "HIGH")):
             if price:
                 d = self.calc_deal(price, btype, parsed, src, q)
-                if d: 
-                    deals.append(d)
+                if d: deals.append(d)
         return deals
 
     # ─── MAIN EXECUTOR ────────────────────────────────────────────────────────
     async def run(self):
-        # Оптимізація TCP-з'єднань для GitHub Actions
         conn = aiohttp.TCPConnector(limit=MAX_CONCURRENT, ttl_dns_cache=300, enable_cleanup_closed=True)
-        timeout = aiohttp.ClientTimeout(total=15)
+        timeout = aiohttp.ClientTimeout(total=30)
         
         async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
             await self.fetch_prices(session)
-            if not self.prices: 
-                return
+            if not self.prices: return
 
             print("  [2/4] Fetching bulk metadata...")
-            poly_m, pred_m = await asyncio.gather(self.fetch_poly_metadata(session), self.fetch_pred_metadata(session))
+            poly_m = await self.fetch_poly_metadata(session)
+            pred_m = await self.fetch_pred_metadata(session)
             all_m = poly_m + pred_m
             
             parseable = []
             for m in all_m:
                 q = m.get('title') or m.get('question') or ''
                 p = self.parse_market(q)
-                if p: 
-                    parseable.append((m, p))
+                if p: parseable.append((m, p))
                 
-            print(f"       Total Active: {len(all_m)} | Match regex: {len(parseable)}")
-            print("  [3/4] Fetching specific orderbooks...")
+            print(f"       Total Valid Formats to Scan: {len(parseable)}")
+            if not parseable:
+                print("❌ No matching markets found. Aborting.")
+                return
+                
+            print("  [3/4] Fetching specific orderbooks concurrently...")
 
             sem = asyncio.Semaphore(MAX_CONCURRENT)
             async def safe_analyze(m, p):
@@ -342,7 +385,7 @@ class ArbitrageScanner:
                     all_deals.extend(res)
                 except Exception:
                     pass
-                sys.stdout.write(f"\r       {i}/{len(tasks)}")
+                sys.stdout.write(f"\r       Orderbooks: {i}/{len(tasks)}")
                 sys.stdout.flush()
 
             print(f"\n  [4/4] {len(all_deals)} deals found\n")
@@ -372,7 +415,7 @@ class ArbitrageScanner:
                            f"2. {d.hedge_dir} @ ${d.parsed.current:,.2f} (x{d.leverage})")
                     try:
                         await self.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
-                    except Exception as e:
+                    except Exception:
                         pass
 
 if __name__ == "__main__":
