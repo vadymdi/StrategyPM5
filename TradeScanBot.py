@@ -166,32 +166,46 @@ class ArbitrageScanner:
         return [r for r in res if r]
 
     async def fetch_pred_metadata(self, session) -> list:
+        IGNORE = {'RESOLVED', 'CLOSED', 'CANCELLED'}
+        asset_keys = {k.lower() for k in ASSETS_MAP}
         markets = []
         cursor = None
-        for _ in range(15):  # Максимум 15 сторінок (1500 ринків) для швидкості в Actions
-            params = {"limit": 100, "status": "ACTIVE"}
+        
+        for i in range(15):  # Пагінація: до 15 сторінок (3000 ринків)
+            params = {"limit": 200}
             if cursor: 
                 params["after"] = cursor
+                
             try:
                 async with session.get("https://api.predict.fun/v1/markets", headers=self._pred_headers, params=params) as r:
                     if r.status != 200: 
+                        print(f"       ⚠️ Predict.fun HTTP {r.status} на сторінці {i+1}")
                         break
+                        
                     data = await r.json(content_type=None)
                     items = data.get('data', []) if isinstance(data, dict) else data
                     if not items: 
                         break
                     
                     for m in items:
-                        if m.get('resolution'): 
+                        # Фільтруємо завершені ринки локально (як у v36.1)
+                        if m.get('status') in IGNORE or m.get('resolution'): 
                             continue
-                        m['source'] = 'Predict.fun'
-                        markets.append(m)
-                        
+                            
+                        # Попередній фільтр по монетах, щоб не перевантажувати парсер
+                        q = (m.get('title') or m.get('question') or '').lower()
+                        if any(k in q for k in asset_keys):
+                            m['source'] = 'Predict.fun'
+                            markets.append(m)
+                            
                     cursor = data.get('cursor') if isinstance(data, dict) else None
                     if not cursor: 
                         break
-            except Exception:
+            except Exception as e:
+                print(f"       ❌ Predict.fun помилка: {e}")
                 break
+                
+        print(f"       ✅ Predict.fun: знайдено {len(markets)} потенційних крипто-ринків")
         return markets
 
     # ─── ORDERBOOKS & CALC ────────────────────────────────────────────────────
