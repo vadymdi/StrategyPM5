@@ -335,45 +335,6 @@ class ArbitrageScanner:
                 deals.append(d)
         return deals
 
-    async def fetch_pred_market(self, session, m: dict) -> list:
-        cur = self.prices.get(m['ticker'])
-        if not cur:
-            return []
-        if cur <= m['target_low'] or cur >= m['target_high']:
-            return []
-
-        market_id = await self._pred_find_id(session, m['slug'])
-        if not market_id:
-            print(f"       ❌ Predict.fun: ID не знайдено для {m['slug']}")
-            return []
-
-        try:
-            async with session.get(
-                f"https://api.predict.fun/v1/markets/{market_id}/orderbook",
-                headers=self._pred_headers,
-            ) as r:
-                if r.status != 200:
-                    return []
-                data = await r.json(content_type=None)
-                ob   = data.get('data', data)
-                asks, bids = ob.get('asks', []), ob.get('bids', [])
-                if not asks or not bids:
-                    return []
-                p_yes = float(min(asks, key=lambda x: float(x[0]))[0])
-                p_no  = 1.0 - float(max(bids, key=lambda x: float(x[0]))[0])
-        except Exception as e:
-            print(f"       ❌ Predict.fun orderbook {market_id}: {e}")
-            return []
-
-        parsed = MarketParsed(ticker=m['ticker'], target_low=m['target_low'],
-                              target_high=m['target_high'], current=cur)
-        deals = []
-        for price, btype in ((p_yes, "LOW"), (p_no, "HIGH")):
-            d = self.calc_deal(price, btype, parsed, "Predict.fun", m['title'])
-            if d:
-                deals.append(d)
-        return deals
-
     # ─── TELEGRAM ─────────────────────────────────────────────────────────────
     async def send_telegram(self, msg: str):
         try:
