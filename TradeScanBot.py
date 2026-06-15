@@ -262,58 +262,25 @@ class ArbitrageScanner:
         return deals
 
     # ─── PREDICT.FUN ──────────────────────────────────────────────────────────
-    async def _pred_find_id(self, session, slug: str) -> Optional[str]:
-        """Шукає market ID: фільтр по параметру, прямий шлях або глибока пагінація."""
-        
-        # Спроба 1: Фільтрація по параметру slug
+    async def _pred_find_active_id(self, session, slug: str) -> Optional[str]:
+        """Точковий пошук ID ринку з обов'язковою перевіркою статусу ACTIVE."""
         try:
-            async with session.get(
-                "https://api.predict.fun/v1/markets",
-                headers=self._pred_headers,
-                params={"slug": slug}
-            ) as r:
-                if r.status == 200:
-                    data = await r.json(content_type=None)
-                    items = data.get('data', data) if isinstance(data, dict) else data
-                    if isinstance(items, list) and items:
-                        return str(items[0].get('id'))
-        except Exception:
-            pass
-
-        # Спроба 2: Прямий запит по шляху
-        try:
-            async with session.get(
-                f"https://api.predict.fun/v1/markets/{slug}",
-                headers=self._pred_headers,
-            ) as r:
-                if r.status == 200:
-                    data = await r.json(content_type=None)
-                    item = data.get('data', data) if isinstance(data, dict) else data
-                    if isinstance(item, dict) and item.get('id'):
-                        return str(item['id'])
-        except Exception:
-            pass
-
-        # Спроба 3: Глибока пагінація активних ринків (до 2000 записів)
-        try:
-            for i in range(20):
+            for i in range(5):
                 async with session.get(
                     "https://api.predict.fun/v1/markets",
                     headers=self._pred_headers,
                     params={
                         "limit": 100, 
                         "offset": i * 100, 
-                        "page": i + 1, 
                         "status": "ACTIVE"
                     },
                 ) as r:
-                    if r.status != 200:
+                    if r.status != 200: 
                         break
                     
                     data = await r.json(content_type=None)
-                    items = data.get('data', data) if isinstance(data, dict) else data
-                    
-                    if not isinstance(items, list) or not items:
+                    items = data.get('data', []) if isinstance(data, dict) else data
+                    if not items: 
                         break
                     
                     for item in items:
@@ -322,8 +289,51 @@ class ArbitrageScanner:
                             return str(item['id'])
         except Exception:
             pass
-
         return None
+
+    async def fetch_pred_market(self, session, m: dict) -> list:
+        cur = self.prices.get(m['ticker'])
+        if not cur:
+            return []
+        if cur <= m['target_low'] or cur >= m['target_high']:
+            return []
+
+        market_id = await self._pred_find_active_id(session, m['slug'])
+        if not market_id:
+            print(f"       ❌ Predict.fun: Активний ID не знайдено для {m['slug']}")
+            return []
+
+        try:
+            async with session.get(
+                f"https://api.predict.fun/v1/markets/{market_id}/orderbook",
+                headers=self._pred_headers,
+            ) as r:
+                if r.status != 200:
+                    print(f"       ❌ Predict.fun HTTP {r.status} для {m['slug']}")
+                    return []
+                
+                data = await r.json(content_type=None)
+                ob   = data.get('data', data)
+                asks, bids = ob.get('asks', []), ob.get('bids', [])
+                
+                if not asks or not bids:
+                    print(f"       ⚠️ Predict.fun: Пустий стакан для {m['slug']} (asks: {len(asks)}, bids: {len(bids)})")
+                    return []
+                
+                p_yes = float(min(asks, key=lambda x: float(x[0]))[0])
+                p_no  = 1.0 - float(max(bids, key=lambda x: float(x[0]))[0])
+        except Exception as e:
+            print(f"       ❌ Predict.fun orderbook {market_id}: {e}")
+            return []
+
+        parsed = MarketParsed(ticker=m['ticker'], target_low=m['target_low'],
+                              target_high=m['target_high'], current=cur)
+        deals = []
+        for price, btype in ((p_yes, "LOW"), (p_no, "HIGH")):
+            d = self.calc_deal(price, btype, parsed, "Predict.fun", m['title'])
+            if d:
+                deals.append(d)
+        return deals
 
     async def fetch_pred_market(self, session, m: dict) -> list:
         cur = self.prices.get(m['ticker'])
