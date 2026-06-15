@@ -1,4 +1,4 @@
-""" CRYPTO ARBITRAGE TERMINAL v41.0 — Direct Target Mode """
+""" CRYPTO ARBITRAGE TERMINAL v42.0 — Sniper Mode (Fixed API Specs) """
 import os
 import sys
 import asyncio
@@ -30,13 +30,6 @@ ASSETS_MAP = {
     "SOL": "SOLUSDT", "BNB": "BNBUSDT"
 }
 
-# Жорстко задані ринки для прямого запиту
-TARGET_SLUGS = [
-    "will-solana-hit-60-or-140-first",
-    "will-ethereum-hit-1k-or-3k-first",
-    "will-bnb-hit-400-or-800-first"
-]
-
 # ── DATACLASSES ───────────────────────────────────────────────────────────────
 @dataclass
 class MarketParsed:
@@ -66,11 +59,11 @@ class ArbitrageScanner:
         self._pred_headers = {
             "x-api-key": PREDICT_API_KEY,
             "Content-Type": "application/json",
-            "User-Agent": "ArbitrageBot/41.0",
+            "User-Agent": "ArbitrageBot/42.0",
         }
         print(f"\n{'='*65}")
-        print(f"  ARBITRAGE TERMINAL v41.0 | Budget: ${BET_AMOUNT:.0f}")
-        print(f"  Direct Target Mode: {len(TARGET_SLUGS)} specific markets")
+        print(f"  ARBITRAGE TERMINAL v42.0 | Budget: ${BET_AMOUNT:.0f}")
+        print(f"  Sniper Mode: Direct Slugs & API-Compliant Scans")
         print(f"{'='*65}\n")
 
     # ─── PRICES ───────────────────────────────────────────────────────────────
@@ -116,36 +109,62 @@ class ArbitrageScanner:
         if len(nums) < 2: return None
         return MarketParsed(ticker=ticker, target_low=min(nums), target_high=max(nums), current=cur)
 
-    # ─── METADATA (DIRECT FETCH) ──────────────────────────────────────────────
-    async def _fetch_poly_direct(self, session, slug: str) -> Optional[dict]:
-        try:
-            async with session.get(f"https://gamma-api.polymarket.com/markets/slug/{slug}") as r:
-                if r.status == 200:
-                    data = await r.json(content_type=None)
-                    m = data[0] if isinstance(data, list) and data else data
-                    raw = m.get('clobTokenIds')
-                    tokens = json.loads(raw) if isinstance(raw, str) else raw
-                    if tokens and len(tokens) >= 2:
-                        m['source'] = 'Polymarket'
-                        m['clobTokenIds'] = tokens
-                        return m
-        except Exception:
-            pass
-        return None
+    # ─── METADATA (SNIPER FETCH) ──────────────────────────────────────────────
+    async def fetch_poly_targets(self, session) -> list:
+        slugs = [
+            "will-solana-hit-60-or-140-first",
+            "will-ethereum-hit-1k-or-3k-first",
+            "will-bnb-hit-400-or-800-first"
+        ]
+        results = []
+        for slug in slugs:
+            try:
+                async with session.get(f"https://gamma-api.polymarket.com/markets/slug/{slug}") as r:
+                    if r.status == 200:
+                        data = await r.json(content_type=None)
+                        m = data[0] if isinstance(data, list) and data else data
+                        raw = m.get('clobTokenIds')
+                        tokens = json.loads(raw) if isinstance(raw, str) else raw
+                        if tokens and len(tokens) >= 2:
+                            m['source'] = 'Polymarket'
+                            m['clobTokenIds'] = tokens
+                            results.append(m)
+            except Exception:
+                pass
+        return results
 
-    async def _fetch_pred_direct(self, session, slug: str) -> Optional[dict]:
-        # Використовуємо ендпоінт /v1/markets/{id} напряму згідно специфікації
-        try:
-            async with session.get(f"https://api.predict.fun/v1/markets/{slug}", headers=self._pred_headers) as r:
-                if r.status == 200:
-                    res = await r.json(content_type=None)
-                    m = res.get('data')
-                    if m:
-                        m['source'] = 'Predict.fun'
-                        return m
-        except Exception:
-            pass
-        return None
+    async def fetch_pred_targets(self, session) -> list:
+        # Згідно специфікації використовуємо status=OPEN та first=100
+        found_markets = []
+        cursor = None
+
+        for _ in range(10): # Перебираємо до 10 сторінок (1000 ринків)
+            params = {"first": 100, "status": "OPEN"}
+            if cursor: params["after"] = cursor
+
+            try:
+                async with session.get("https://api.predict.fun/v1/markets", headers=self._pred_headers, params=params) as r:
+                    if r.status != 200: break
+                    data = await r.json(content_type=None)
+                    items = data.get('data', [])
+                    if not items: break
+
+                    for m in items:
+                        t = (m.get('title') or m.get('question') or '').lower()
+                        # Жорсткий пошук по ключових словах, щоб ігнорувати формат (1k vs 1,000)
+                        is_sol = "solana" in t and "60" in t and "140" in t
+                        is_eth = "eth" in t and ("1k" in t or "1000" in t or "1,000" in t) and ("3k" in t or "3000" in t or "3,000" in t)
+                        is_bnb = "bnb" in t and "400" in t and "800" in t
+                        
+                        if is_sol or is_eth or is_bnb:
+                            m['source'] = 'Predict.fun'
+                            found_markets.append(m)
+
+                    cursor = data.get('cursor') if isinstance(data, dict) else None
+                    if not cursor: break
+            except Exception:
+                break
+        return found_markets
 
     # ─── ORDERBOOKS ───────────────────────────────────────────────────────────
     @staticmethod
@@ -176,7 +195,7 @@ class ArbitrageScanner:
 
         elif src == 'Predict.fun':
             try:
-                # Отримуємо стакан використовуючи числовий ID який прийшов з метадати
+                # Використовуємо числовий ID знайденого ринку
                 market_id = m.get('id')
                 async with session.get(f"https://api.predict.fun/v1/markets/{market_id}/orderbook", headers=self._pred_headers) as r:
                     if r.status == 200:
@@ -222,17 +241,17 @@ class ArbitrageScanner:
             if not self.prices: return
 
             print("  [2/4] Fetching specific targets...")
-            poly_tasks = [self._fetch_poly_direct(session, s) for s in TARGET_SLUGS]
-            pred_tasks = [self._fetch_pred_direct(session, s) for s in TARGET_SLUGS]
             
-            raw_results = await asyncio.gather(*(poly_tasks + pred_tasks))
-            valid_markets = [m for m in raw_results if m]
+            # Шукаємо ринки паралельно
+            poly_markets, pred_markets = await asyncio.gather(
+                self.fetch_poly_targets(session),
+                self.fetch_pred_targets(session)
+            )
             
-            poly_count = sum(1 for m in valid_markets if m['source'] == 'Polymarket')
-            pred_count = sum(1 for m in valid_markets if m['source'] == 'Predict.fun')
+            valid_markets = poly_markets + pred_markets
             
-            print(f"       ✅ Polymarket: {poly_count} target(s) found")
-            print(f"       ✅ Predict.fun: {pred_count} target(s) found")
+            print(f"       ✅ Polymarket: {len(poly_markets)} target(s) found")
+            print(f"       ✅ Predict.fun: {len(pred_markets)} target(s) found")
 
             print("  [3/4] Parsing & Fetching Orderbooks...")
             tasks = []
