@@ -13,7 +13,7 @@ from telegram import Bot
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 BET_AMOUNT              = 1000.0
 MIN_PROFIT_USD          = 1.0
-ROI_THRESHOLD_ALERT     = 5.0
+ROI_THRESHOLD_ALERT     = 1.0
 SAFETY_FACTOR           = 1.15
 MAX_CONCURRENT          = 20
 BINANCE_FEE_RATE        = 0.0005
