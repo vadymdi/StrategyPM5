@@ -2,7 +2,7 @@ name: Arbitrage Scanner
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '8 * * * *'
   workflow_dispatch:  # Кнопка для ручного запуску
 
 jobs:
